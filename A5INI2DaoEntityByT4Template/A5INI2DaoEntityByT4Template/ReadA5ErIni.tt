@@ -1,0 +1,227 @@
+﻿<#@ assembly name="System.Core"
+#><#@ assembly name="System.Data.Linq"
+#><#@ assembly name="EnvDTE"
+#><#@ assembly name="System.Xml"
+#><#@ assembly name="System.Xml.Linq"
+#><#@ import namespace="System.Collections.Generic"
+#><#@ import namespace="System.IO"
+#><#@ import namespace="System.Text"
+#><#@ import namespace="System.Linq"
+#><#@ import namespace="Microsoft.VisualStudio.TextTemplating"
+#><#@ include file="IniFile.tt" 
+#>
+
+<#+
+    public struct A5Table
+    {
+        public string PName;
+        public string LName;
+        public string EntityName;
+        public List<A5Field> listFields;
+        public string querySql;
+        public string findByPkParaStr;
+        public List<A5Field> pkFieldList;
+    }
+    public struct A5Field
+    {
+        // Field="論理名","物理名","データ型","NOT NULL",主キーの時 0～,デフォルト式,コメント,色,DDLオプション (Version 2.8系)
+        public string LName;
+        public string PName;
+        public string FieldName;
+        public string type;
+        public string csharpTypeName;
+        public string notNull;
+        public string pk;
+        public string defaultVal; //デフォルト式
+        public string comment;
+        public string color;
+        public string ddlOption;
+    }
+
+    public class ReadA5ErIni
+    {
+        public static string FirstLetterToUpper(string str)
+        {
+            if (str == null)
+                return null;
+
+            if (str.Length > 1)
+                return char.ToUpper(str[0]) + str.Substring(1);
+
+            return str.ToUpper();
+        }
+
+        public static string GetEntityName(string tableName)
+        {
+            string ret = "";
+            string[] colums = tableName.Split('_');
+            for (int i = 0; i < colums.Length; i++)
+            {
+                ret = ret + FirstLetterToUpper(colums[i].ToLower());
+            }
+            return ret;
+        }
+
+        public static string GetFieldType(string typeName, Dictionary<string, string> dicDomains, string notNull)
+        {
+            string ret = "";
+            string csharpTypeName = "";
+            if (typeName.StartsWith("*"))
+            {
+                dicDomains.TryGetValue(typeName.Replace("*", ""), out ret);
+            }
+            else
+            {
+                ret = typeName.Replace("@", "");
+            }
+            ret = ret.Replace("@", "");
+            csharpTypeName = ret;
+            if (ret.IndexOf("VAR") != -1)
+            {
+                csharpTypeName = "string";
+            }
+            else if (ret.IndexOf("TIMESTAMP") != -1)
+            {
+                if (string.IsNullOrEmpty(notNull))
+                {
+                    csharpTypeName = "Datetime?";
+                }
+                else
+                {
+                    csharpTypeName = "Datetime";
+                }
+            }
+            else if (ret.IndexOf("DECIMAL") != -1)
+            {
+                csharpTypeName = "decimal";
+            }
+            else if (ret.IndexOf("NUM") != -1)
+            {
+                if (ret.IndexOf(".") != -1 || ret.IndexOf(",") != -1)
+                {
+                    csharpTypeName = "decimal";
+                }
+                else
+                {
+                    string keta = ret.Replace("NUMBER", "").Replace("(", "").Replace(")", "");
+                    short ketaInt = 0;
+                    Int16.TryParse(keta, out ketaInt);
+                    //'桁数を判断する
+                    //'int(符号付き 32 ビット整数)範囲： -2,147,483,648 ～ 2,147,483,647
+                    if (ketaInt > 9)
+                    {
+                        csharpTypeName = "long";
+                    }
+                    else
+                    {
+                        csharpTypeName = "int";
+                    }
+                }
+            }
+
+            return csharpTypeName;
+        }
+        public static void SetQuerySqlStr(ref A5Table tableObj)
+        {
+            List<A5Field> pkFieldList = tableObj.pkFieldList;
+            List<string> lstQueryItems = new List<string>();
+            List<string> lstParaItems = new List<string>();
+            foreach (var pkItems in pkFieldList)
+            {
+                lstQueryItems.Add(pkItems.PName + "=/*" + pkItems.FieldName + "*/");
+                lstParaItems.Add(pkItems.csharpTypeName + " " + pkItems.FieldName + " ");
+            }
+            tableObj.querySql = string.Join(" AND ", lstQueryItems);
+            tableObj.findByPkParaStr = string.Join(",", lstParaItems);
+        }
+        public static List<A5Table> Read(string fileFullPath)
+        {
+            // using IniFile
+            var iniFile = new IniFile(fileFullPath, "#");
+            // all domains
+            string[] Domains = iniFile.GetAllValues("Manager", "Domain");
+            // all domains
+            string[] CommonField = iniFile.GetAllValues("Manager", "CommonField");
+            // テーブルの物理名
+            string[] EntityPNames = iniFile.GetAllValues("Entity", "PName");
+            // テーブルの論理名
+            string[] EntityLNames = iniFile.GetAllValues("Entity", "LName");
+            // all fields
+            Dictionary<string, List<string>> EntityFields = iniFile.GetAllValuesBySepicalCondition("Entity", "Field", "[entity]pname", "[entity]modifieddatetime");
+            List<string> listDomain = new List<string>(Domains);
+            Dictionary<string, string> dicDomains = new Dictionary<string, string>();
+            foreach (var item in Domains)
+            {
+                string[] data = item.Split('=');
+                dicDomains.Add(data[0], data[1]);
+            }
+            List<A5Table> listTables = new List<A5Table>();
+            List<A5Field> lstFields = new List<A5Field>();
+            List<A5Field> lstCommonFields = new List<A5Field>();
+            foreach (var fields in CommonField)
+            {
+                string[] colums = fields.Split(',');
+                A5Field field = new A5Field
+                {
+                    LName = colums[0].Replace("\"", ""),
+                    PName = colums[1].Replace("\"", ""),
+                    FieldName = GetEntityName(colums[1].Replace("\"", "")),
+                    type = colums[2].Replace("\"", ""),
+                    csharpTypeName = GetFieldType(colums[2].Replace("\"", ""), dicDomains, colums[3].Replace("\"", "")),
+                    notNull = colums[3].Replace("\"", ""),
+                    pk = colums[4].Replace("\"", ""),
+                    defaultVal = colums[5].Replace("\"", ""),
+                    comment = colums[6].Replace("\"", ""),
+                    color = colums[7].Replace("\"", ""),
+                    ddlOption = (colums.Length > 8) ? colums[8].Replace("\"", "") :null
+                };
+                lstCommonFields.Add(field);
+            }
+
+            int idx = 0;
+            // spilt fields to each table
+            foreach (var data in EntityFields)
+            {
+                foreach(var fields in data.Value)
+                {
+                    string[] colums = fields.Split(',');
+                    A5Field field = new A5Field
+                    {
+                        LName = colums[0].Replace("\"", ""),
+                        PName = colums[1].Replace("\"", ""),
+                        FieldName = GetEntityName(colums[1].Replace("\"", "")),
+                        type = colums[2].Replace("\"", ""),
+                        csharpTypeName = GetFieldType(colums[2].Replace("\"", ""), dicDomains, colums[3].Replace("\"", "")),
+                        notNull = colums[3].Replace("\"", ""),
+                        pk = colums[4].Replace("\"", ""),
+                        defaultVal = colums[5].Replace("\"", ""),
+                        comment = colums[6].Replace("\"", ""),
+                        color = colums[7].Replace("\"", ""),
+                        ddlOption = colums[8].Replace("\"", "")
+                    };
+                    lstFields.Add(field);
+                }
+                lstFields.AddRange(lstCommonFields);
+                A5Table tableObj = new A5Table
+                {
+                    PName = EntityPNames[idx],
+                    LName = EntityLNames[idx],
+                    EntityName = GetEntityName(EntityPNames[idx]),
+                    listFields = new List<A5Field>(lstFields),
+                    pkFieldList = new List<A5Field>(lstFields.Where(_ => !string.IsNullOrEmpty(_.pk))),
+                    querySql = "",
+                    findByPkParaStr = "",
+
+                };
+                SetQuerySqlStr(ref tableObj);
+                listTables.Add(tableObj);
+                idx++;
+                lstFields.Clear();
+            }
+
+            return listTables;
+        }
+
+
+    }
+#>
